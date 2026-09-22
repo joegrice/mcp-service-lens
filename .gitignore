@@ -1,0 +1,23 @@
+# Go build and test artifacts
+/mcp-service-lens
+/bin/
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Local configuration and secrets
+.env
+.env.*
+config.local.*
+config.private.*
+
+# Editor and OS metadata
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Temporary files
+tmp/
+*.log
