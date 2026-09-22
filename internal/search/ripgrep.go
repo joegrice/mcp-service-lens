@@ -2,10 +2,12 @@ package search
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,6 +78,7 @@ func TraceDocumentation(ctx context.Context, services []config.Service, serviceN
 		return Result{}, err
 	}
 	result := Result{Query: query, MatchCount: len(all)}
+	sortMatches(all)
 	if len(all) > maxResults {
 		result.Truncated = true
 		all = all[:maxResults]
@@ -148,12 +151,28 @@ func Trace(ctx context.Context, services []config.Service, query string, maxResu
 		return Result{}, err
 	}
 	result := Result{Query: query, MatchCount: len(all)}
+	sortMatches(all)
 	if len(all) > maxResults {
 		result.Truncated = true
 		all = all[:maxResults]
 	}
 	result.Matches = all
 	return result, nil
+}
+
+func sortMatches(matches []Match) {
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Service != matches[j].Service {
+			return matches[i].Service < matches[j].Service
+		}
+		if matches[i].Source != matches[j].Source {
+			return matches[i].Source < matches[j].Source
+		}
+		if matches[i].File != matches[j].File {
+			return matches[i].File < matches[j].File
+		}
+		return matches[i].Line < matches[j].Line
+	})
 }
 
 func serviceByName(services []config.Service, name string) config.Service {
@@ -184,9 +203,9 @@ func run(ctx context.Context, service, source, root string, excludes []string, q
 		workingDirectory = root
 		searchPath = "."
 	}
-	args := []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**", query, searchPath}
+	args := []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**", "--glob", "!dist/**", "--glob", "!build/**", "--glob", "!coverage/**", "--glob", "!tmp/**", query, searchPath}
 	if len(excludes) > 0 {
-		args = []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**"}
+		args = []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**", "--glob", "!dist/**", "--glob", "!build/**", "--glob", "!coverage/**", "--glob", "!tmp/**"}
 		for _, exclude := range excludes {
 			args = append(args, "--glob", "!"+exclude)
 		}
@@ -194,15 +213,18 @@ func run(ctx context.Context, service, source, root string, excludes []string, q
 	}
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = workingDirectory
-	out, err := cmd.CombinedOutput()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("rg %s: %w: %s", root, err, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("prepare rg %s: %w", root, err)
 	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start rg %s: %w", root, err)
+	}
+
 	var matches []Match
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		parts := strings.SplitN(line, ":", 3)
@@ -219,5 +241,17 @@ func run(ctx context.Context, service, source, root string, excludes []string, q
 		}
 		matches = append(matches, Match{Service: service, Source: source, File: file, Line: lineNumber, Text: parts[2]})
 	}
-	return matches, scanner.Err()
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+	if scanErr != nil {
+		return nil, fmt.Errorf("read rg %s: %w", root, scanErr)
+	}
+	err = waitErr
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("rg %s: %w: %s", root, err, strings.TrimSpace(stderr.String()))
+	}
+	return matches, nil
 }

@@ -22,6 +22,12 @@ func TestTraceSearchesCodeAndLogs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "client.go"), []byte("call /payments\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(root, "dist"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dist", "bundle.js"), []byte("call /payments\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(logs, "app.log"), []byte("request /payments\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +37,21 @@ func TestTraceSearchesCodeAndLogs(t *testing.T) {
 	}
 	if result.MatchCount != 2 || len(result.Matches) != 2 {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Matches[0].Source != "code" || result.Matches[1].Source != "log" {
+		t.Fatalf("matches are not deterministically ordered: %+v", result.Matches)
+	}
+}
+
+func TestSortMatchesUsesStableServiceSourceFileLineOrder(t *testing.T) {
+	matches := []Match{
+		{Service: "payments", Source: "log", File: "/tmp/z.log", Line: 2},
+		{Service: "orders", Source: "code", File: "/tmp/b.go", Line: 4},
+		{Service: "orders", Source: "code", File: "/tmp/a.go", Line: 2},
+	}
+	sortMatches(matches)
+	if matches[0].File != "/tmp/a.go" || matches[1].File != "/tmp/b.go" || matches[2].Service != "payments" {
+		t.Fatalf("unexpected match order: %+v", matches)
 	}
 }
 
