@@ -21,3 +21,6 @@ config.private.*
 # Temporary files
 tmp/
 *.log
+
+# Local code intelligence cache
+.codegraph/
