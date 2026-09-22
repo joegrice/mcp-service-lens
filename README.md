@@ -6,6 +6,7 @@ A local [Model Context Protocol](https://modelcontextprotocol.io/) server for un
 
 - Targeted reads of `docs/service-overview.md`, `docs/endpoints.md`, and `docs/integrations.md`
 - Automatic discovery of documented repositories below a selected directory
+- Generic documentation search for repositories without the standard filenames
 - YAML or JSON service configuration
 - Concurrent code and log searches with `ripgrep`
 - Stdio transport for local MCP clients
@@ -22,7 +23,7 @@ A local [Model Context Protocol](https://modelcontextprotocol.io/) server for un
 go run ./cmd/mcp-service-lens --directory /home/joe/Code
 ```
 
-Directory mode discovers immediate child repositories marked by `documentation-generation-prompt.txt` or a standard documentation file. It also detects `logs`, `log`, and `var/log` directories.
+Directory mode discovers immediate child repositories containing a `docs/` directory. It also detects `logs`, `log`, and `var/log` directories.
 
 Use `--config ./config.example.yaml` or `MCP_SERVICE_LENS_CONFIG` for explicit service and log mappings. Use `MCP_SERVICE_LENS_DIRECTORY` instead of passing `--directory` if preferred.
 
@@ -33,6 +34,13 @@ Available tools:
 - `get_endpoints`
 - `get_integrations`
 - `trace_workflow_logs`
+- `search_service_docs`
+
+`search_service_docs` is the fallback for repositories whose documentation does not use the standard filenames. For example:
+
+```text
+Search all service documentation for "IGDB" and summarize the relevant design and integration notes.
+```
 
 The server communicates over stdout using MCP. Diagnostics are written to stderr.
 

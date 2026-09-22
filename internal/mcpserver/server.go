@@ -27,6 +27,12 @@ type TraceInput struct {
 	MaxResults *int   `json:"max_results,omitempty" jsonschema:"optional maximum number of matching lines to return; must be between 1 and 1000"`
 }
 
+type DocumentationSearchInput struct {
+	Query      string  `json:"query" jsonschema:"text to search for in documentation files"`
+	Service    *string `json:"service,omitempty" jsonschema:"optional configured service name; searches all services when omitted"`
+	MaxResults *int    `json:"max_results,omitempty" jsonschema:"optional maximum number of matching lines to return; must be between 1 and 1000"`
+}
+
 type ServiceOutput struct {
 	Services []ServiceSummary `json:"services"`
 }
@@ -53,6 +59,7 @@ func (s *Server) Register(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{Name: "get_endpoints", Description: "Read docs/endpoints.md for a configured service."}, s.getEndpoints)
 	mcp.AddTool(server, &mcp.Tool{Name: "get_integrations", Description: "Read docs/integrations.md for a configured service."}, s.getIntegrations)
 	mcp.AddTool(server, &mcp.Tool{Name: "trace_workflow_logs", Description: "Search configured service code and log directories with ripgrep."}, s.trace)
+	mcp.AddTool(server, &mcp.Tool{Name: "search_service_docs", Description: "Search documentation files for a keyword, heading, endpoint, or integration name."}, s.searchDocumentation)
 }
 
 func (s *Server) listServices(context.Context, *mcp.CallToolRequest, EmptyInput) (*mcp.CallToolResult, ServiceOutput, error) {
@@ -96,6 +103,25 @@ func (s *Server) trace(ctx context.Context, _ *mcp.CallToolRequest, input TraceI
 		}
 	}
 	result, err := search.Trace(ctx, s.registry.All(), input.Query, maxResults)
+	if err != nil {
+		return nil, search.Result{}, err
+	}
+	return textResult(result)
+}
+
+func (s *Server) searchDocumentation(ctx context.Context, _ *mcp.CallToolRequest, input DocumentationSearchInput) (*mcp.CallToolResult, search.Result, error) {
+	serviceName := ""
+	if input.Service != nil {
+		serviceName = *input.Service
+	}
+	maxResults := 200
+	if input.MaxResults != nil {
+		maxResults = *input.MaxResults
+		if maxResults < 1 || maxResults > search.MaxResultsLimit {
+			return nil, search.Result{}, fmt.Errorf("max_results must be between 1 and %d", search.MaxResultsLimit)
+		}
+	}
+	result, err := search.TraceDocumentation(ctx, s.registry.All(), serviceName, input.Query, maxResults)
 	if err != nil {
 		return nil, search.Result{}, err
 	}

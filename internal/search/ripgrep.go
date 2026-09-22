@@ -30,6 +30,60 @@ type Result struct {
 
 const MaxResultsLimit = 1000
 
+func TraceDocumentation(ctx context.Context, services []config.Service, serviceName, query string, maxResults int) (Result, error) {
+	if strings.TrimSpace(query) == "" {
+		return Result{}, fmt.Errorf("query must not be empty")
+	}
+	if maxResults < 1 || maxResults > MaxResultsLimit {
+		return Result{}, fmt.Errorf("max results must be between 1 and %d", MaxResultsLimit)
+	}
+
+	var targets []config.Service
+	for _, service := range services {
+		if serviceName == "" || service.Name == serviceName {
+			targets = append(targets, service)
+		}
+	}
+	if serviceName != "" && len(targets) == 0 {
+		return Result{}, fmt.Errorf("unknown service %q", serviceName)
+	}
+
+	results := make(chan []Match, len(targets))
+	errs := make(chan error, len(targets))
+	var wg sync.WaitGroup
+	for _, service := range targets {
+		service := service
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			matches, err := run(ctx, service.Name, "documentation", filepath.Join(service.Root, "docs"), nil, query)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- matches
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	var all []Match
+	for matches := range results {
+		all = append(all, matches...)
+	}
+	for err := range errs {
+		return Result{}, err
+	}
+	result := Result{Query: query, MatchCount: len(all)}
+	if len(all) > maxResults {
+		result.Truncated = true
+		all = all[:maxResults]
+	}
+	result.Matches = all
+	return result, nil
+}
+
 func Trace(ctx context.Context, services []config.Service, query string, maxResults int) (Result, error) {
 	if strings.TrimSpace(query) == "" {
 		return Result{}, fmt.Errorf("query must not be empty")

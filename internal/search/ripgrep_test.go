@@ -41,3 +41,24 @@ func TestTraceRejectsInvalidResultLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceDocumentationSearchesGenericDocs(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep is not installed")
+	}
+	root := t.TempDir()
+	docs := filepath.Join(root, "docs", "designs")
+	if err := os.MkdirAll(docs, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docs, "architecture.md"), []byte("IGDB integration\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := TraceDocumentation(context.Background(), []config.Service{{Name: "openwire", Root: root}}, "", "IGDB", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MatchCount != 1 || len(result.Matches) != 1 || result.Matches[0].Source != "documentation" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}

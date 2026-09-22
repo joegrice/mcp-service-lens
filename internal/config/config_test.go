@@ -81,3 +81,19 @@ func TestDiscoverFindsDocumentedRepositoriesAndLogs(t *testing.T) {
 		t.Fatalf("unexpected discovered logs: %+v", cfg.Services[0].LogDirectories)
 	}
 }
+
+func TestDiscoverAcceptsRepositoryWithGenericDocsDirectory(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "openwire")
+	if err := os.MkdirAll(filepath.Join(root, "docs", "designs"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Discover(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 1 || cfg.Services[0].Name != "openwire" {
+		t.Fatalf("unexpected discovered services: %+v", cfg.Services)
+	}
+}

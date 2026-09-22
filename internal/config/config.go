@@ -89,6 +89,9 @@ func Discover(parent string) (Config, error) {
 }
 
 func hasDocumentation(root string) bool {
+	if info, err := os.Stat(filepath.Join(root, "docs")); err == nil && info.IsDir() {
+		return true
+	}
 	if fileExists(filepath.Join(root, "documentation-generation-prompt.txt")) {
 		return true
 	}
