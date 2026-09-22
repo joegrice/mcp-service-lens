@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"mcp-service-lens/internal/config"
@@ -52,6 +53,45 @@ func TestSortMatchesUsesStableServiceSourceFileLineOrder(t *testing.T) {
 	sortMatches(matches)
 	if matches[0].File != "/tmp/a.go" || matches[1].File != "/tmp/b.go" || matches[2].Service != "payments" {
 		t.Fatalf("unexpected match order: %+v", matches)
+	}
+}
+
+func TestTraceBoundsLargeResultSets(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep is not installed")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "events.go"), []byte(strings.Repeat("needle\n", 2500)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root}}, "needle", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Matches) != 100 || result.MatchCount != 2500 || !result.Truncated {
+		t.Fatalf("result was not bounded correctly: matches=%d count=%d truncated=%t", len(result.Matches), result.MatchCount, result.Truncated)
+	}
+}
+
+func BenchmarkTraceLargeResultSet(b *testing.B) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		b.Skip("ripgrep is not installed")
+	}
+	root := b.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "events.go"), []byte(strings.Repeat("needle\n", 5000)), 0600); err != nil {
+		b.Fatal(err)
+	}
+	service := []config.Service{{Name: "orders", Root: root}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result, err := Trace(context.Background(), service, "needle", 100)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(result.Matches) != 100 {
+			b.Fatalf("expected bounded result, got %d matches", len(result.Matches))
+		}
 	}
 }
 
