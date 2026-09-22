@@ -25,6 +25,24 @@ go run ./cmd/mcp-service-lens --directory /home/joe/Code
 
 Directory mode discovers immediate child repositories containing a `docs/` directory. It also detects `logs`, `log`, and `var/log` directories.
 
+This starts an MCP stdio process and waits for an MCP client, so running it directly in a terminal will appear idle. For OpenCode, use the installed binary:
+
+```json
+{
+  "mcp": {
+    "service-lens": {
+      "type": "local",
+      "command": [
+        "/home/joe/.local/bin/mcp-service-lens",
+        "--directory",
+        "/home/joe/Code"
+      ],
+      "enabled": true
+    }
+  }
+}
+```
+
 Use `--config ./config.example.yaml` or `MCP_SERVICE_LENS_CONFIG` for explicit service and log mappings. Use `MCP_SERVICE_LENS_DIRECTORY` instead of passing `--directory` if preferred.
 
 Available tools:
