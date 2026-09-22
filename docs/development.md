@@ -8,7 +8,7 @@ Run the stdio server from the repository root:
 go run ./cmd/mcp-service-lens --directory /home/joe/Code
 ```
 
-The process waits for an MCP client and will appear idle when launched directly in a terminal.
+The process waits for an MCP client and will appear idle when launched directly in a terminal. Any MCP-compatible client can launch `mcp-service-lens` with `--directory /home/joe/Code`.
 
 ## Discovery
 

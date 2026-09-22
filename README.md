@@ -14,28 +14,18 @@ go build -o ~/.local/bin/mcp-service-lens ./cmd/mcp-service-lens
 
 Requires Go 1.25+ and [`ripgrep`](https://github.com/BurntSushi/ripgrep) on `PATH`.
 
-## OpenCode
+## MCP Clients
 
-Add the server to `~/.config/opencode/opencode.jsonc`:
+Register `mcp-service-lens` as a local stdio MCP server in your client with:
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "service-lens": {
-      "type": "local",
-      "command": [
-        "/home/joe/.local/bin/mcp-service-lens",
-        "--directory",
-        "/home/joe/Code"
-      ],
-      "enabled": true
-    }
-  }
-}
+```text
+command: /home/joe/.local/bin/mcp-service-lens
+arguments: --directory /home/joe/Code
 ```
 
-Restart OpenCode, then ask questions such as:
+For development, use `go run` from the repository root instead. The server communicates over stdin/stdout and should be launched by the MCP client, not used as an interactive terminal command.
+
+After registering it, ask your client questions such as:
 
 ```text
 Find the documented request flow for the checkout endpoint, then trace correlation ID req-123 across all services and identify the first failure.
