@@ -14,10 +14,10 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", os.Getenv("DOCS_TRACKER_CONFIG"), "path to a .json, .yaml, or .yml configuration file")
+	configPath := flag.String("config", os.Getenv("MCP_SERVICE_LENS_CONFIG"), "path to a .json, .yaml, or .yml configuration file")
 	flag.Parse()
 	if *configPath == "" {
-		log.Fatal("config path is required; use --config or DOCS_TRACKER_CONFIG")
+		log.Fatal("config path is required; use --config or MCP_SERVICE_LENS_CONFIG")
 	}
 
 	cfg, err := config.Load(*configPath)

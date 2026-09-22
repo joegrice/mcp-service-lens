@@ -21,7 +21,7 @@ A local [Model Context Protocol](https://modelcontextprotocol.io/) server for un
 go run ./cmd/mcp-service-lens --config ./config.example.yaml
 ```
 
-Set `DOCS_TRACKER_CONFIG` instead of passing `--config` if preferred. Each service needs an absolute `root`; `log_directories` are optional.
+Set `MCP_SERVICE_LENS_CONFIG` instead of passing `--config` if preferred. Each service needs an absolute `root`; `log_directories` are optional.
 
 Available tools:
 
