@@ -4,15 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
 	"mcp-service-lens/internal/config"
+)
+
+const (
+	MaxResultsLimit = 1000
+	searchWorkers   = 4
 )
 
 type Match struct {
@@ -30,75 +35,51 @@ type Result struct {
 	Truncated  bool    `json:"truncated"`
 }
 
-const MaxResultsLimit = 1000
+type target struct {
+	service config.Service
+	source  string
+	path    string
+	exclude []string
+}
+
+type runResult struct {
+	matches    []Match
+	matchCount int
+	truncated  bool
+}
+
+type rgRecord struct {
+	Type string `json:"type"`
+	Data struct {
+		Path struct {
+			Text string `json:"text"`
+		} `json:"path"`
+		Lines struct {
+			Text string `json:"text"`
+		} `json:"lines"`
+		LineNumber int `json:"line_number"`
+	} `json:"data"`
+}
 
 func TraceDocumentation(ctx context.Context, services []config.Service, serviceName, query string, maxResults int) (Result, error) {
-	if strings.TrimSpace(query) == "" {
-		return Result{}, fmt.Errorf("query must not be empty")
+	if err := validateQuery(query, maxResults); err != nil {
+		return Result{}, err
 	}
-	if maxResults < 1 || maxResults > MaxResultsLimit {
-		return Result{}, fmt.Errorf("max results must be between 1 and %d", MaxResultsLimit)
-	}
-
-	var targets []config.Service
+	var targets []target
 	for _, service := range services {
 		if serviceName == "" || service.Name == serviceName {
-			targets = append(targets, service)
+			targets = append(targets, target{service: service, source: "documentation", path: filepath.Join(service.Root, "docs")})
 		}
 	}
 	if serviceName != "" && len(targets) == 0 {
 		return Result{}, fmt.Errorf("unknown service %q", serviceName)
 	}
-
-	results := make(chan []Match, len(targets))
-	errs := make(chan error, len(targets))
-	var wg sync.WaitGroup
-	for _, service := range targets {
-		service := service
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			matches, err := run(ctx, service.Name, "documentation", filepath.Join(service.Root, "docs"), nil, query)
-			if err != nil {
-				errs <- err
-				return
-			}
-			results <- matches
-		}()
-	}
-	wg.Wait()
-	close(results)
-	close(errs)
-
-	var all []Match
-	for matches := range results {
-		all = append(all, matches...)
-	}
-	for err := range errs {
-		return Result{}, err
-	}
-	result := Result{Query: query, MatchCount: len(all)}
-	sortMatches(all)
-	if len(all) > maxResults {
-		result.Truncated = true
-		all = all[:maxResults]
-	}
-	result.Matches = all
-	return result, nil
+	return collect(ctx, targets, query, maxResults)
 }
 
 func Trace(ctx context.Context, services []config.Service, query string, maxResults int) (Result, error) {
-	if strings.TrimSpace(query) == "" {
-		return Result{}, fmt.Errorf("query must not be empty")
-	}
-	if maxResults < 1 || maxResults > MaxResultsLimit {
-		return Result{}, fmt.Errorf("max results must be between 1 and %d", MaxResultsLimit)
-	}
-	type target struct {
-		service config.Service
-		source  string
-		path    string
-		exclude []string
+	if err := validateQuery(query, maxResults); err != nil {
+		return Result{}, err
 	}
 	var targets []target
 	for _, service := range services {
@@ -109,55 +90,74 @@ func Trace(ctx context.Context, services []config.Service, query string, maxResu
 				excludes = append(excludes, filepath.ToSlash(relative)+"/**")
 			}
 		}
-		targets = append(targets, target{service, "code", service.Root, excludes})
+		targets = append(targets, target{service: service, source: "code", path: service.Root, exclude: excludes})
 		for _, dir := range service.LogDirectories {
-			targets = append(targets, target{service, "log", dir, nil})
+			targets = append(targets, target{service: service, source: "log", path: dir})
 		}
 	}
+	return collect(ctx, targets, query, maxResults)
+}
 
-	results := make(chan []Match, len(targets))
+func validateQuery(query string, maxResults int) error {
+	if strings.TrimSpace(query) == "" {
+		return fmt.Errorf("query must not be empty")
+	}
+	if maxResults < 1 || maxResults > MaxResultsLimit {
+		return fmt.Errorf("max results must be between 1 and %d", MaxResultsLimit)
+	}
+	return nil
+}
+
+func collect(ctx context.Context, targets []target, query string, maxResults int) (Result, error) {
+	if len(targets) == 0 {
+		return Result{Query: query}, nil
+	}
+	results := make(chan runResult, len(targets))
 	errs := make(chan error, len(targets))
+	jobs := make(chan target)
+	workerCount := min(searchWorkers, len(targets))
 	var wg sync.WaitGroup
-	for _, t := range targets {
-		t := t
+	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			matches, err := run(ctx, t.service.Name, t.source, t.path, t.exclude, query)
-			if err != nil {
-				errs <- err
-				return
-			}
-			results <- matches
-		}()
-	}
-	wg.Wait()
-	close(results)
-	close(errs)
-
-	var all []Match
-	for matches := range results {
-		for _, match := range matches {
-			if match.Source == "code" {
-				service := serviceByName(services, match.Service)
-				if isInConfiguredLogDirectory(match.File, service.LogDirectories) {
+			for t := range jobs {
+				result, err := run(ctx, t, query, maxResults)
+				if err != nil {
+					errs <- err
 					continue
 				}
+				results <- result
 			}
-			all = append(all, match)
+		}()
+	}
+	go func() {
+		for _, t := range targets {
+			jobs <- t
 		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+		close(errs)
+	}()
+
+	var all []Match
+	matchCount := 0
+	truncated := false
+	for result := range results {
+		all = append(all, result.matches...)
+		matchCount += result.matchCount
+		truncated = truncated || result.truncated
 	}
 	for err := range errs {
 		return Result{}, err
 	}
-	result := Result{Query: query, MatchCount: len(all)}
 	sortMatches(all)
 	if len(all) > maxResults {
-		result.Truncated = true
+		truncated = true
 		all = all[:maxResults]
 	}
-	result.Matches = all
-	return result, nil
+	return Result{Query: query, Matches: all, MatchCount: matchCount, Truncated: truncated}, nil
 }
 
 func sortMatches(matches []Match) {
@@ -171,87 +171,84 @@ func sortMatches(matches []Match) {
 		if matches[i].File != matches[j].File {
 			return matches[i].File < matches[j].File
 		}
-		return matches[i].Line < matches[j].Line
+		if matches[i].Line != matches[j].Line {
+			return matches[i].Line < matches[j].Line
+		}
+		return matches[i].Text < matches[j].Text
 	})
 }
 
-func serviceByName(services []config.Service, name string) config.Service {
-	for _, service := range services {
-		if service.Name == name {
-			return service
-		}
-	}
-	return config.Service{}
-}
-
-func isInConfiguredLogDirectory(path string, directories []string) bool {
-	path = filepath.Clean(path)
-	for _, directory := range directories {
-		directory = filepath.Clean(directory)
-		relative, err := filepath.Rel(directory, path)
-		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
-}
-
-func run(ctx context.Context, service, source, root string, excludes []string, query string) ([]Match, error) {
-	searchPath := root
+func run(ctx context.Context, t target, query string, maxMatches int) (runResult, error) {
+	searchPath := t.path
 	workingDirectory := ""
-	if source == "code" {
-		workingDirectory = root
+	if t.source == "code" {
+		workingDirectory = t.path
 		searchPath = "."
 	}
-	args := []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**", "--glob", "!dist/**", "--glob", "!build/**", "--glob", "!coverage/**", "--glob", "!tmp/**", query, searchPath}
-	if len(excludes) > 0 {
-		args = []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**", "--glob", "!dist/**", "--glob", "!build/**", "--glob", "!coverage/**", "--glob", "!tmp/**"}
-		for _, exclude := range excludes {
-			args = append(args, "--glob", "!"+exclude)
-		}
-		args = append(args, query, searchPath)
+	args := []string{
+		"--json", "--hidden", "--fixed-strings",
+		"--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**",
+		"--glob", "!dist/**", "--glob", "!build/**", "--glob", "!coverage/**", "--glob", "!tmp/**",
 	}
+	for _, exclude := range t.exclude {
+		args = append(args, "--glob", "!"+exclude)
+	}
+	args = append(args, query, searchPath)
+
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = workingDirectory
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("prepare rg %s: %w", root, err)
+		return runResult{}, fmt.Errorf("prepare rg %s: %w", t.path, err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start rg %s: %w", root, err)
+		return runResult{}, fmt.Errorf("start rg %s: %w", t.path, err)
 	}
 
-	var matches []Match
+	result := runResult{}
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) != 3 {
+		var record rgRecord
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil || record.Type != "match" {
 			continue
 		}
-		lineNumber, err := strconv.Atoi(parts[1])
-		if err != nil {
-			continue
+		result.matchCount++
+		if len(result.matches) < maxMatches {
+			file := filepath.Clean(record.Data.Path.Text)
+			if t.source == "code" {
+				file = filepath.Join(t.path, file)
+			}
+			result.matches = append(result.matches, Match{
+				Service: t.service.Name,
+				Source:  t.source,
+				File:    file,
+				Line:    record.Data.LineNumber,
+				Text:    strings.TrimSuffix(strings.TrimSuffix(record.Data.Lines.Text, "\n"), "\r"),
+			})
 		}
-		file := filepath.Clean(parts[0])
-		if source == "code" {
-			file = filepath.Join(root, file)
-		}
-		matches = append(matches, Match{Service: service, Source: source, File: file, Line: lineNumber, Text: parts[2]})
 	}
-	scanErr := scanner.Err()
+	if err := scanner.Err(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return runResult{}, fmt.Errorf("read rg %s: %w", t.path, err)
+	}
 	waitErr := cmd.Wait()
-	if scanErr != nil {
-		return nil, fmt.Errorf("read rg %s: %w", root, scanErr)
-	}
-	err = waitErr
-	if err != nil {
-		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
-			return nil, nil
+	if waitErr != nil {
+		if exit, ok := waitErr.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+			return result, nil
 		}
-		return nil, fmt.Errorf("rg %s: %w: %s", root, err, strings.TrimSpace(stderr.String()))
+		return runResult{}, fmt.Errorf("rg %s: %w: %s", t.path, waitErr, strings.TrimSpace(stderr.String()))
 	}
-	return matches, nil
+	result.truncated = result.matchCount > len(result.matches)
+	return result, nil
+}
+
+func min(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }

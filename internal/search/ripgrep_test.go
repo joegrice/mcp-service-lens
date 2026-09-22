@@ -74,6 +74,40 @@ func TestTraceBoundsLargeResultSets(t *testing.T) {
 	}
 }
 
+func TestTraceSearchesHiddenAndColonFilenames(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep is not installed")
+	}
+	root := t.TempDir()
+	paths := []string{filepath.Join(root, ".runtime.go"), filepath.Join(root, "file:with-colon.go")}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("needle\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root}}, "needle", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MatchCount != 2 || len(result.Matches) != 2 {
+		t.Fatalf("hidden or colon filename was not parsed: %+v", result)
+	}
+	if result.Matches[1].File != paths[1] {
+		t.Fatalf("unexpected filename parsing: %+v", result.Matches)
+	}
+}
+
+func TestTraceWithNoTargetsReturnsImmediately(t *testing.T) {
+	result, err := Trace(context.Background(), nil, "needle", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MatchCount != 0 || len(result.Matches) != 0 {
+		t.Fatalf("unexpected empty result: %+v", result)
+	}
+}
+
 func BenchmarkTraceLargeResultSet(b *testing.B) {
 	if _, err := exec.LookPath("rg"); err != nil {
 		b.Skip("ripgrep is not installed")
