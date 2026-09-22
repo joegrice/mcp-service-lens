@@ -53,3 +53,31 @@ func TestValidatePathsRejectsMissingRoot(t *testing.T) {
 		t.Fatal("expected missing root error")
 	}
 }
+
+func TestDiscoverFindsDocumentedRepositoriesAndLogs(t *testing.T) {
+	parent := t.TempDir()
+	serviceRoot := filepath.Join(parent, "orders")
+	if err := os.MkdirAll(filepath.Join(serviceRoot, "docs"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serviceRoot, "documentation-generation-prompt.txt"), []byte("standard"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(serviceRoot, "logs"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(parent, "not-a-service"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Discover(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Services) != 1 || cfg.Services[0].Name != "orders" {
+		t.Fatalf("unexpected discovered services: %+v", cfg.Services)
+	}
+	if len(cfg.Services[0].LogDirectories) != 1 || cfg.Services[0].LogDirectories[0] != filepath.Join(serviceRoot, "logs") {
+		t.Fatalf("unexpected discovered logs: %+v", cfg.Services[0].LogDirectories)
+	}
+}

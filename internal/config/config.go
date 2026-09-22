@@ -48,6 +48,74 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// Discover finds documented repositories directly below parent.
+func Discover(parent string) (Config, error) {
+	info, err := os.Stat(parent)
+	if err != nil {
+		return Config{}, fmt.Errorf("stat discovery directory %q: %w", parent, err)
+	}
+	if !info.IsDir() {
+		return Config{}, fmt.Errorf("discovery path %q is not a directory", parent)
+	}
+
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return Config{}, fmt.Errorf("read discovery directory %q: %w", parent, err)
+	}
+	var services []Service
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		root := filepath.Join(parent, entry.Name())
+		entryInfo, err := os.Stat(root)
+		if err != nil || !entryInfo.IsDir() || !hasDocumentation(root) {
+			continue
+		}
+		services = append(services, Service{
+			Name:           entry.Name(),
+			Root:           root,
+			LogDirectories: discoverLogDirectories(root),
+		})
+	}
+	if len(services) == 0 {
+		return Config{}, fmt.Errorf("no documented repositories found directly under %q", parent)
+	}
+	cfg := Config{Services: services}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, cfg.ValidatePaths()
+}
+
+func hasDocumentation(root string) bool {
+	if fileExists(filepath.Join(root, "documentation-generation-prompt.txt")) {
+		return true
+	}
+	for _, file := range []string{"service-overview.md", "endpoints.md", "integrations.md"} {
+		if fileExists(filepath.Join(root, "docs", file)) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoverLogDirectories(root string) []string {
+	var directories []string
+	for _, relative := range []string{"logs", "log", filepath.Join("var", "log")} {
+		path := filepath.Join(root, relative)
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			directories = append(directories, path)
+		}
+	}
+	return directories
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 func (c Config) Validate() error {
 	if len(c.Services) == 0 {
 		return errors.New("services must not be empty")

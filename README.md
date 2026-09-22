@@ -5,6 +5,7 @@ A local [Model Context Protocol](https://modelcontextprotocol.io/) server for un
 ## Features
 
 - Targeted reads of `docs/service-overview.md`, `docs/endpoints.md`, and `docs/integrations.md`
+- Automatic discovery of documented repositories below a selected directory
 - YAML or JSON service configuration
 - Concurrent code and log searches with `ripgrep`
 - Stdio transport for local MCP clients
@@ -18,10 +19,12 @@ A local [Model Context Protocol](https://modelcontextprotocol.io/) server for un
 ## Usage
 
 ```sh
-go run ./cmd/mcp-service-lens --config ./config.example.yaml
+go run ./cmd/mcp-service-lens --directory /home/joe/Code
 ```
 
-Set `MCP_SERVICE_LENS_CONFIG` instead of passing `--config` if preferred. Each service needs an absolute `root`; `log_directories` are optional.
+Directory mode discovers immediate child repositories marked by `documentation-generation-prompt.txt` or a standard documentation file. It also detects `logs`, `log`, and `var/log` directories.
+
+Use `--config ./config.example.yaml` or `MCP_SERVICE_LENS_CONFIG` for explicit service and log mappings. Use `MCP_SERVICE_LENS_DIRECTORY` instead of passing `--directory` if preferred.
 
 Available tools:
 

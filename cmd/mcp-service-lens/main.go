@@ -15,12 +15,24 @@ import (
 
 func main() {
 	configPath := flag.String("config", os.Getenv("MCP_SERVICE_LENS_CONFIG"), "path to a .json, .yaml, or .yml configuration file")
+	directory := flag.String("directory", os.Getenv("MCP_SERVICE_LENS_DIRECTORY"), "parent directory containing documented repositories")
 	flag.Parse()
-	if *configPath == "" {
-		log.Fatal("config path is required; use --config or MCP_SERVICE_LENS_CONFIG")
+	if *configPath != "" && *directory != "" {
+		log.Fatal("use either --config or --directory, not both")
+	}
+	if *configPath == "" && *directory == "" {
+		log.Fatal("configuration is required; use --config, --directory, MCP_SERVICE_LENS_CONFIG, or MCP_SERVICE_LENS_DIRECTORY")
 	}
 
-	cfg, err := config.Load(*configPath)
+	var (
+		cfg config.Config
+		err error
+	)
+	if *directory != "" {
+		cfg, err = config.Discover(*directory)
+	} else {
+		cfg, err = config.Load(*configPath)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
