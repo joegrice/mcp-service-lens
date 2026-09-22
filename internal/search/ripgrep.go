@@ -28,12 +28,14 @@ type Result struct {
 	Truncated  bool    `json:"truncated"`
 }
 
+const MaxResultsLimit = 1000
+
 func Trace(ctx context.Context, services []config.Service, query string, maxResults int) (Result, error) {
 	if strings.TrimSpace(query) == "" {
 		return Result{}, fmt.Errorf("query must not be empty")
 	}
-	if maxResults <= 0 {
-		maxResults = 200
+	if maxResults < 1 || maxResults > MaxResultsLimit {
+		return Result{}, fmt.Errorf("max results must be between 1 and %d", MaxResultsLimit)
 	}
 	type target struct {
 		service config.Service
@@ -122,21 +124,28 @@ func isInConfiguredLogDirectory(path string, directories []string) bool {
 }
 
 func run(ctx context.Context, service, source, root string, excludes []string, query string) ([]Match, error) {
-	args := []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**", query, root}
+	searchPath := root
+	workingDirectory := ""
+	if source == "code" {
+		workingDirectory = root
+		searchPath = "."
+	}
+	args := []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**", query, searchPath}
 	if len(excludes) > 0 {
 		args = []string{"--line-number", "--with-filename", "--no-heading", "--color=never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**"}
 		for _, exclude := range excludes {
 			args = append(args, "--glob", "!"+exclude)
 		}
-		args = append(args, query, root)
+		args = append(args, query, searchPath)
 	}
 	cmd := exec.CommandContext(ctx, "rg", args...)
-	out, err := cmd.Output()
+	cmd.Dir = workingDirectory
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("rg %s: %w", root, err)
+		return nil, fmt.Errorf("rg %s: %w: %s", root, err, strings.TrimSpace(string(out)))
 	}
 	var matches []Match
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
@@ -150,7 +159,11 @@ func run(ctx context.Context, service, source, root string, excludes []string, q
 		if err != nil {
 			continue
 		}
-		matches = append(matches, Match{Service: service, Source: source, File: filepath.Clean(parts[0]), Line: lineNumber, Text: parts[2]})
+		file := filepath.Clean(parts[0])
+		if source == "code" {
+			file = filepath.Join(root, file)
+		}
+		matches = append(matches, Match{Service: service, Source: source, File: file, Line: lineNumber, Text: parts[2]})
 	}
 	return matches, scanner.Err()
 }

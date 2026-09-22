@@ -10,8 +10,13 @@ func TestLoadJSONAndYAML(t *testing.T) {
 	dir := t.TempDir()
 	jsonPath := filepath.Join(dir, "config.json")
 	yamlPath := filepath.Join(dir, "config.yaml")
-	jsonData := `{"services":[{"name":"orders","root":"/tmp/orders","log_directories":["/tmp/orders/logs"]}]}`
-	yamlData := "services:\n  - name: orders\n    root: /tmp/orders\n    log_directories:\n      - /tmp/orders/logs\n"
+	root := filepath.Join(dir, "orders")
+	logs := filepath.Join(root, "logs")
+	if err := os.MkdirAll(logs, 0700); err != nil {
+		t.Fatal(err)
+	}
+	jsonData := `{"services":[{"name":"orders","root":"` + root + `","log_directories":["` + logs + `"]}]}`
+	yamlData := "services:\n  - name: orders\n    root: " + root + "\n    log_directories:\n      - " + logs + "\n"
 	if err := os.WriteFile(jsonPath, []byte(jsonData), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -39,5 +44,12 @@ func TestValidateRejectsDuplicateAndRelativePaths(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestValidatePathsRejectsMissingRoot(t *testing.T) {
+	err := (Config{Services: []Service{{Name: "orders", Root: filepath.Join(t.TempDir(), "missing")}}}).ValidatePaths()
+	if err == nil {
+		t.Fatal("expected missing root error")
 	}
 }

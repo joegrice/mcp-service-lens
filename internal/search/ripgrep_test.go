@@ -33,3 +33,11 @@ func TestTraceSearchesCodeAndLogs(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+
+func TestTraceRejectsInvalidResultLimit(t *testing.T) {
+	for _, limit := range []int{0, MaxResultsLimit + 1} {
+		if _, err := Trace(context.Background(), nil, "query", limit); err == nil {
+			t.Fatalf("expected error for max results %d", limit)
+		}
+	}
+}

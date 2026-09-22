@@ -24,7 +24,7 @@ type ServiceInput struct {
 
 type TraceInput struct {
 	Query      string `json:"query" jsonschema:"correlation ID, keyword, or endpoint path"`
-	MaxResults *int   `json:"max_results,omitempty" jsonschema:"maximum number of matching lines to return"`
+	MaxResults *int   `json:"max_results,omitempty" jsonschema:"optional maximum number of matching lines to return; must be between 1 and 1000"`
 }
 
 type ServiceOutput struct {
@@ -91,6 +91,9 @@ func (s *Server) trace(ctx context.Context, _ *mcp.CallToolRequest, input TraceI
 	maxResults := 200
 	if input.MaxResults != nil {
 		maxResults = *input.MaxResults
+		if maxResults < 1 || maxResults > search.MaxResultsLimit {
+			return nil, search.Result{}, fmt.Errorf("max_results must be between 1 and %d", search.MaxResultsLimit)
+		}
 	}
 	result, err := search.Trace(ctx, s.registry.All(), input.Query, maxResults)
 	if err != nil {

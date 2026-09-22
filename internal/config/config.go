@@ -42,6 +42,9 @@ func Load(path string) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config %q: %w", path, err)
 	}
+	if err := cfg.ValidatePaths(); err != nil {
+		return Config{}, fmt.Errorf("validate paths in config %q: %w", path, err)
+	}
 	return cfg, nil
 }
 
@@ -65,6 +68,26 @@ func (c Config) Validate() error {
 		for _, dir := range s.LogDirectories {
 			if !filepath.IsAbs(dir) {
 				return fmt.Errorf("service %q log directory must be absolute: %q", s.Name, dir)
+			}
+		}
+	}
+	return nil
+}
+
+func (c Config) ValidatePaths() error {
+	for _, service := range c.Services {
+		if info, err := os.Stat(service.Root); err != nil || !info.IsDir() {
+			if err != nil {
+				return fmt.Errorf("service %q root %q: %w", service.Name, service.Root, err)
+			}
+			return fmt.Errorf("service %q root %q is not a directory", service.Name, service.Root)
+		}
+		for _, dir := range service.LogDirectories {
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+				if err != nil {
+					return fmt.Errorf("service %q log directory %q: %w", service.Name, dir, err)
+				}
+				return fmt.Errorf("service %q log directory %q is not a directory", service.Name, dir)
 			}
 		}
 	}
