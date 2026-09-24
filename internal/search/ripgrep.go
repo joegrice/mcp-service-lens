@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -16,9 +18,16 @@ import (
 )
 
 const (
-	MaxResultsLimit = 1000
-	searchWorkers   = 4
+	MaxResultsLimit  = 1000
+	maxSearchWorkers = 8
 )
+
+var focusedCodeExcludes = []string{
+	"**/test/**",
+	"**/tests/**",
+	"**/Test/**",
+	"**/.spacelift/**",
+}
 
 type Match struct {
 	Service string `json:"service"`
@@ -36,10 +45,11 @@ type Result struct {
 }
 
 type target struct {
-	service config.Service
-	source  string
-	path    string
-	exclude []string
+	service    config.Service
+	source     string
+	path       string
+	exclude    []string
+	ignoreCase bool
 }
 
 type runResult struct {
@@ -68,22 +78,47 @@ func TraceDocumentation(ctx context.Context, services []config.Service, serviceN
 	var targets []target
 	for _, service := range services {
 		if serviceName == "" || service.Name == serviceName {
-			targets = append(targets, target{service: service, source: "documentation", path: filepath.Join(service.Root, "docs")})
+			docsPath := filepath.Join(service.Root, "docs")
+			if info, err := os.Stat(docsPath); err != nil || !info.IsDir() {
+				continue
+			}
+			targets = append(targets, target{
+				service:    service,
+				source:     "documentation",
+				path:       docsPath,
+				ignoreCase: true,
+			})
 		}
 	}
 	if serviceName != "" && len(targets) == 0 {
 		return Result{}, fmt.Errorf("unknown service %q", serviceName)
 	}
-	return collect(ctx, targets, query, maxResults)
+	return collect(ctx, targets, query, maxResults, true)
 }
 
-func Trace(ctx context.Context, services []config.Service, query string, maxResults int) (Result, error) {
+func Trace(ctx context.Context, services []config.Service, serviceName, query string, maxResults int) (Result, error) {
+	return trace(ctx, services, serviceName, query, maxResults, false)
+}
+
+// TraceFocused searches production code and logs, prioritising likely call sites
+// and definitions over configuration, infrastructure, and test fixtures.
+func TraceFocused(ctx context.Context, services []config.Service, serviceName, query string, maxResults int) (Result, error) {
+	return trace(ctx, services, serviceName, query, maxResults, true)
+}
+
+func trace(ctx context.Context, services []config.Service, serviceName, query string, maxResults int, focused bool) (Result, error) {
 	if err := validateQuery(query, maxResults); err != nil {
 		return Result{}, err
 	}
 	var targets []target
 	for _, service := range services {
-		var excludes []string
+		if serviceName != "" && service.Name != serviceName {
+			continue
+		}
+		excludes := []string{"docs/**"}
+		if focused {
+			excludes = append(excludes, focusedCodeExcludes...)
+		}
 		for _, dir := range service.LogDirectories {
 			relative, err := filepath.Rel(service.Root, dir)
 			if err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -95,7 +130,10 @@ func Trace(ctx context.Context, services []config.Service, query string, maxResu
 			targets = append(targets, target{service: service, source: "log", path: dir})
 		}
 	}
-	return collect(ctx, targets, query, maxResults)
+	if serviceName != "" && len(targets) == 0 {
+		return Result{}, fmt.Errorf("unknown service %q", serviceName)
+	}
+	return collect(ctx, targets, query, maxResults, focused)
 }
 
 func validateQuery(query string, maxResults int) error {
@@ -108,21 +146,25 @@ func validateQuery(query string, maxResults int) error {
 	return nil
 }
 
-func collect(ctx context.Context, targets []target, query string, maxResults int) (Result, error) {
+func collect(ctx context.Context, targets []target, query string, maxResults int, focused bool) (Result, error) {
 	if len(targets) == 0 {
 		return Result{Query: query}, nil
 	}
 	results := make(chan runResult, len(targets))
 	errs := make(chan error, len(targets))
 	jobs := make(chan target)
-	workerCount := min(searchWorkers, len(targets))
+	workerCount := min(min(maxSearchWorkers, runtime.GOMAXPROCS(0)), len(targets))
 	var wg sync.WaitGroup
 	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				result, err := run(ctx, t, query, maxResults)
+				perTargetLimit := maxResults
+				if focused {
+					perTargetLimit = min(MaxResultsLimit, maxResults*4)
+				}
+				result, err := run(ctx, t, query, perTargetLimit)
 				if err != nil {
 					errs <- err
 					continue
@@ -152,7 +194,11 @@ func collect(ctx context.Context, targets []target, query string, maxResults int
 	for err := range errs {
 		return Result{}, err
 	}
-	sortMatches(all)
+	if focused {
+		sortFocusedMatches(all, query)
+	} else {
+		sortMatches(all)
+	}
 	if len(all) > maxResults {
 		truncated = true
 		all = all[:maxResults]
@@ -178,6 +224,58 @@ func sortMatches(matches []Match) {
 	})
 }
 
+func sortFocusedMatches(matches []Match, query string) {
+	query = strings.ToLower(strings.Join(strings.Fields(query), ""))
+	sort.SliceStable(matches, func(i, j int) bool {
+		iScore := focusedMatchScore(matches[i], query)
+		jScore := focusedMatchScore(matches[j], query)
+		if iScore != jScore {
+			return iScore > jScore
+		}
+		return matchLess(matches[i], matches[j])
+	})
+}
+
+func focusedMatchScore(match Match, query string) int {
+	path := strings.ToLower(filepath.ToSlash(match.File))
+	base := strings.ToLower(filepath.Base(match.File))
+	score := 0
+	if match.Source == "code" {
+		score += 5
+	}
+	if strings.Contains(path, "/src/") || strings.Contains(path, "/app/") || strings.Contains(path, "/internal/") {
+		score += 4
+	}
+	if query != "" && strings.Contains(strings.Join(strings.Fields(base), ""), query) {
+		score += 5
+	}
+	if query != "" && strings.Contains(strings.Join(strings.Fields(path), ""), query) {
+		score += 6
+	}
+	for _, noisy := range []string{"/config/", ".env", ".tf", ".json", ".yaml", ".yml", "/test/", "/tests/", "/.spacelift/"} {
+		if strings.Contains(path, noisy) {
+			score -= 5
+		}
+	}
+	return score
+}
+
+func matchLess(left, right Match) bool {
+	if left.Service != right.Service {
+		return left.Service < right.Service
+	}
+	if left.Source != right.Source {
+		return left.Source < right.Source
+	}
+	if left.File != right.File {
+		return left.File < right.File
+	}
+	if left.Line != right.Line {
+		return left.Line < right.Line
+	}
+	return left.Text < right.Text
+}
+
 func run(ctx context.Context, t target, query string, maxMatches int) (runResult, error) {
 	searchPath := t.path
 	workingDirectory := ""
@@ -189,6 +287,9 @@ func run(ctx context.Context, t target, query string, maxMatches int) (runResult
 		"--json", "--hidden", "--fixed-strings",
 		"--glob", "!.git/**", "--glob", "!vendor/**", "--glob", "!node_modules/**",
 		"--glob", "!dist/**", "--glob", "!build/**", "--glob", "!coverage/**", "--glob", "!tmp/**",
+	}
+	if t.ignoreCase {
+		args = append(args, "--ignore-case")
 	}
 	for _, exclude := range t.exclude {
 		args = append(args, "--glob", "!"+exclude)

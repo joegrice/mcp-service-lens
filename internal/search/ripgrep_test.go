@@ -32,7 +32,14 @@ func TestTraceSearchesCodeAndLogs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(logs, "app.log"), []byte("request /payments\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root, LogDirectories: []string{logs}}}, "/payments", 10)
+	docs := filepath.Join(root, "docs")
+	if err := os.Mkdir(docs, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docs, "integrations.md"), []byte("call /payments\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root, LogDirectories: []string{logs}}}, "", "/payments", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +72,7 @@ func TestTraceBoundsLargeResultSets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root}}, "needle", 100)
+	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root}}, "", "needle", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +93,7 @@ func TestTraceSearchesHiddenAndColonFilenames(t *testing.T) {
 		}
 	}
 
-	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root}}, "needle", 10)
+	result, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: root}}, "", "needle", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +106,7 @@ func TestTraceSearchesHiddenAndColonFilenames(t *testing.T) {
 }
 
 func TestTraceWithNoTargetsReturnsImmediately(t *testing.T) {
-	result, err := Trace(context.Background(), nil, "needle", 10)
+	result, err := Trace(context.Background(), nil, "", "needle", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +126,7 @@ func BenchmarkTraceLargeResultSet(b *testing.B) {
 	service := []config.Service{{Name: "orders", Root: root}}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		result, err := Trace(context.Background(), service, "needle", 100)
+		result, err := Trace(context.Background(), service, "", "needle", 100)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -131,13 +138,13 @@ func BenchmarkTraceLargeResultSet(b *testing.B) {
 
 func TestTraceRejectsInvalidResultLimit(t *testing.T) {
 	for _, limit := range []int{0, MaxResultsLimit + 1} {
-		if _, err := Trace(context.Background(), nil, "query", limit); err == nil {
+		if _, err := Trace(context.Background(), nil, "", "query", limit); err == nil {
 			t.Fatalf("expected error for max results %d", limit)
 		}
 	}
 }
 
-func TestTraceDocumentationSearchesGenericDocs(t *testing.T) {
+func TestTraceDocumentationSearchesGenericDocsCaseInsensitively(t *testing.T) {
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("ripgrep is not installed")
 	}
@@ -149,11 +156,81 @@ func TestTraceDocumentationSearchesGenericDocs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(docs, "architecture.md"), []byte("IGDB integration\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := TraceDocumentation(context.Background(), []config.Service{{Name: "openwire", Root: root}}, "", "IGDB", 10)
+	result, err := TraceDocumentation(context.Background(), []config.Service{{Name: "openwire", Root: root}}, "", "igdb", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.MatchCount != 1 || len(result.Matches) != 1 || result.Matches[0].Source != "documentation" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestTraceFiltersByService(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep is not installed")
+	}
+	ordersRoot := t.TempDir()
+	paymentsRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ordersRoot, "client.go"), []byte("needle\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(paymentsRoot, "client.go"), []byte("needle\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	services := []config.Service{
+		{Name: "orders", Root: ordersRoot},
+		{Name: "payments", Root: paymentsRoot},
+	}
+	result, err := Trace(context.Background(), services, "orders", "needle", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MatchCount != 1 || len(result.Matches) != 1 || result.Matches[0].Service != "orders" {
+		t.Fatalf("trace was not scoped to the requested service: %+v", result)
+	}
+}
+
+func TestTraceRejectsUnknownService(t *testing.T) {
+	_, err := Trace(context.Background(), []config.Service{{Name: "orders", Root: t.TempDir()}}, "payments", "needle", 10)
+	if err == nil || !strings.Contains(err.Error(), `unknown service "payments"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTraceFocusedRanksProductionCodeAndExcludesTests(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep is not installed")
+	}
+	root := t.TempDir()
+	paths := map[string]string{
+		filepath.Join(root, "config", "appsettings.json"):          "ServiceCoordinator\n",
+		filepath.Join(root, "src", "ServiceCoordinator.cs"):        "class ServiceCoordinator {}\n",
+		filepath.Join(root, "tests", "ServiceCoordinatorTests.cs"): "ServiceCoordinator\n",
+		filepath.Join(root, "src", "ServiceCoordinatorCaller.cs"):  "client.ServiceCoordinator();\n",
+	}
+	for path, content := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := TraceFocused(context.Background(), []config.Service{{Name: "orders", Root: root}}, "", "ServiceCoordinator", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MatchCount != 3 || len(result.Matches) != 2 {
+		t.Fatalf("unexpected focused result: %+v", result)
+	}
+	if result.Matches[0].File != filepath.Join(root, "src", "ServiceCoordinator.cs") {
+		t.Fatalf("production definition was not ranked first: %+v", result.Matches)
+	}
+	for _, match := range result.Matches {
+		if strings.Contains(match.File, string(filepath.Separator)+"tests"+string(filepath.Separator)) {
+			t.Fatalf("test result should have been excluded: %+v", result.Matches)
+		}
 	}
 }

@@ -24,6 +24,10 @@ For custom layouts, use YAML or JSON configuration:
 go run ./cmd/mcp-service-lens --config ./config.example.yaml
 ```
 
+## Investigation workflow
+
+Use [`investigation.md`](investigation.md) for the documentation-first workflow exposed by `investigate_service`. In short, provide a natural-language question and scope it to a configured service when possible. The tool searches documentation first, then returns focused and ranked code evidence plus related evidence groups for multi-concept questions.
+
 ## Verification
 
 ```sh
