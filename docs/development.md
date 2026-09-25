@@ -5,10 +5,10 @@
 Run the stdio server from the repository root:
 
 ```sh
-go run ./cmd/mcp-service-lens --directory /home/joe/Code
+go run ./cmd/mcp-service-lens --directory /path/to/repositories
 ```
 
-The process waits for an MCP client and will appear idle when launched directly in a terminal. Any MCP-compatible client can launch `mcp-service-lens` with `--directory /home/joe/Code`.
+The process waits for an MCP client and will appear idle when launched directly in a terminal. That is expected for stdio transport: an MCP-compatible client should launch the process on demand and own its lifecycle. No terminal window or separate background process is required. Replace `/path/to/repositories` with the local directory containing the repositories to discover.
 
 ## Discovery
 
